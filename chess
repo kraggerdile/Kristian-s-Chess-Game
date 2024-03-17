@@ -1,0 +1,1089 @@
+import sys
+import pygame
+import time
+
+pygame.init()
+
+# size matters
+w, h = 800, 800
+rows, cols = 8, 8
+board_size = 8
+my_size = w // cols
+BLACK = (0, 0, 0)
+WHITE = (255, 255, 255)
+GRAY = (128, 128, 128)
+
+
+# game screen
+pygame.display.set_caption("Trashy LiChess")
+screen = pygame.display.set_mode((w, h))
+flipped_image = pygame.transform.flip(screen, False, True)
+center = w // 2, h // 2
+ranges = [0, 1, 2, 3, 4, 5, 6, 7]
+
+# bools
+selection = None
+running = True
+dragging = False
+dragged_piece = None
+drag_offset_x = 0
+drag_offset_y = 0
+turns = 1
+
+# keeping track (the whole game, pawn 2 move rule, castling reqs, segregation)
+the_whole_game = []
+translation = []
+
+move_history_pawns = []
+
+w_king_movements = [('w_king', 7, 4)]
+w_queen_rook_moves = []
+w_king_rook_moves = []
+
+b_king_movements = [('b_king', 0, 4)]
+b_queen_rook_moves = []
+b_king_rook_moves = []
+
+address_b = ['b_pawn', 'bq_rook', 'b_knight', 'b_bishop', 'b_queen', 'b_king',
+             'b_bishop', 'b_knight', 'bk_rook']
+address_w = ['w_pawn', 'wq_rook', 'w_knight', 'w_bishop', 'w_queen', 'w_king',
+             'w_bishop', 'w_knight', 'wk_rook']
+
+squares_around_the_w_king = []
+squares_around_the_b_king = []
+
+for i in range(w_king_movements[-1][-2]):
+    for j in range(w_king_movements[-1][-1]):
+        if i not in ranges or j not in ranges:
+            continue
+        squares_around_the_w_king.append([i, j])
+
+for i in range(b_king_movements[-1][-2]):
+    for j in range(b_king_movements[-1][-1]):
+        if i not in ranges or j not in ranges:
+            continue
+        squares_around_the_b_king.append([i, j])
+
+
+def hows_my_white_king(lis):
+    non_safe_squares = 0
+    for w_squares in lis:
+        if ((board[w_squares[-2]][w_squares[-1]] in address_w) or
+                (not no_danger_square_w(w_squares[-2], w_squares[-1]))):
+            non_safe_squares += 1
+    if non_safe_squares == len(lis):
+        return False  # King is now bueno
+    return True  # King is bueno
+
+
+def hows_my_black_king(lis):
+    non_safe_squares = 0
+    for b_squares in lis:
+        if ((board[b_squares[-2]][b_squares[-1]] in address_w) or
+                (not no_danger_square_b(b_squares[-2], b_squares[-1]))):
+            non_safe_squares += 1
+    if non_safe_squares == len(lis):
+        return False  # King is now bueno
+    return True  # King is bueno
+
+
+chess_pieces = {
+    # black pieces
+    'b_pawn': pygame.image.load('b_pawn.png'),
+    'bq_rook': pygame.image.load('bq_rook.png'),
+    'bk_rook': pygame.image.load('bk_rook.png'),
+    'b_knight': pygame.image.load('b_knight.png'),
+    'b_bishop': pygame.image.load('b_bishop.png'),
+    'b_queen': pygame.image.load('b_queen.png'),
+    'b_king': pygame.image.load('b_king.png'),
+
+    # white pieces
+    'w_pawn': pygame.image.load('w_pawn.png'),
+    'wq_rook': pygame.image.load('wq_rook.png'),
+    'wk_rook': pygame.image.load('wk_rook.png'),
+    'w_knight': pygame.image.load('w_knight.png'),
+    'w_bishop': pygame.image.load('w_bishop.png'),
+    'w_queen': pygame.image.load('w_queen.png'),
+    'w_king': pygame.image.load('w_king.png')
+}
+
+cols_to_letters = {  # cols -------> letters
+    0: 'a', 1: 'b', 2: 'c', 3: 'd', 4: 'e', 5: 'f', 6: 'g', 7: 'h'}
+
+rows_to_nums = {  # rows -------> num nums
+    0: 8, 1: 7, 2: 6, 3: 5, 4: 4, 5: 3, 6: 2, 7: 1}
+
+
+# white king reqs for no checks
+def diags_w(row, col):
+    # Check diagonals in four directions: top-left, top-right, bottom-left, and bottom-right
+    for row_offset, col_offset in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        # Start from the drop position
+        check_row, check_col = row + row_offset, col + col_offset
+        # Iterate over the diagonal until reaching the edge of the board
+        while 0 <= check_row < board_size and 0 <= check_col < board_size:
+            # If something is in front you are safe
+            if ((board[check_row][check_col] in address_w or board[check_row][check_col]
+                 in ['b_pawn', 'b_rook', 'b_knight', 'b_king', 'b_knight', 'b_rook'])):
+                break
+            # Check if there's an enemy bishop or queen on the diagonal
+            elif board[check_row][check_col] in ['b_bishop', 'b_queen']:
+                return False
+            # Move to the next square along the diagonal
+            check_row += row_offset
+            check_col += col_offset
+    return True
+
+
+def ups_and_downs_w(row, col):
+    # Check horizontal and vertical paths
+    for direction in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        row_offset, col_offset = direction
+        # Start from the drop position
+        check_row, check_col = row + row_offset, col + col_offset
+        # Iterate over the path until reaching the edge of the board
+        while 0 <= check_row < board_size and 0 <= check_col < board_size:
+            # If something is in front you are safe
+            if (board[check_row][check_col] in address_w or board[check_row][check_col]
+                    in ['b_pawn', 'b_bishop', 'b_knight', 'b_king', 'b_knight', 'b_bishop']):
+                break
+            # Check if there's an enemy rook or queen on the path
+            elif board[check_row][check_col] in ['bq_rook', 'bk_rook', 'b_queen']:
+                return False
+            # Move to the next square along the path
+            check_row += row_offset
+            check_col += col_offset
+    return True
+
+
+def any_other_threat_w(row, col):
+    # ----------------------------------------------White Piece----------------------------------------------------#
+    if (board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_w
+            and drop_row > 0 and drop_col > 0 and board[drop_row - 1][drop_col - 1].endswith(
+            "pawn") and board[drop_row - 1][drop_col - 1] in address_b):
+        return True
+
+    if (board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_w and drop_row > 0 and
+            drop_col < 7 and board[drop_row - 1][drop_col + 1].endswith(
+            "pawn") and board[drop_row - 1][drop_col + 1] in address_b):
+        return True
+
+    if board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_w and drop_row > 0:
+        if (drop_col > 0 and board[drop_row - 1][drop_col - 1].endswith("pawn") and
+                board[drop_row - 1][drop_col - 1] in address_b):
+            return True
+        if (drop_col < 7 and board[drop_row - 1][drop_col + 1].endswith("pawn") and
+                board[drop_row - 1][drop_col + 1] in address_b):
+            return True
+
+    if board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_w:
+        knight_offsets = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+        for row_offset, col_offset in knight_offsets:
+            if 0 <= drop_row + row_offset < 8 and 0 <= drop_col + col_offset < 8:
+                piece = board[drop_row + row_offset][drop_col + col_offset]
+                if piece.endswith("knight") and piece in address_b:
+                    return True
+    return False  # No threats
+
+
+def any_other_threat_b(row, col):
+    # ----------------------------------------------Black Piece-----------------------------------------------------#
+    if (board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_b
+            and drop_row < 7 and drop_col > 0 and board[drop_row + 1][drop_col - 1].endswith(
+            "pawn") and board[drop_row + 1][drop_col - 1] in address_w):
+        return True
+
+    if (board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_b
+            and drop_row < 7 and drop_col < 7 and board[drop_row + 1][drop_col + 1].endswith(
+            "pawn") and board[drop_row + 1][drop_col + 1] in address_w):
+        return True
+
+    if board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_b and drop_row < 7:
+        if (drop_col > 0 and board[drop_row + 1][drop_col - 1].endswith("pawn") and
+                board[drop_row + 1][drop_col - 1] in address_w):
+            return True
+        if (drop_col < 7 and board[drop_row + 1][drop_col + 1].endswith("pawn") and
+                board[drop_row + 1][drop_col + 1] in address_w):
+            return True
+
+        # Check if there's an enemy knight in sight of the king
+    if board[the_whole_game[-1][-2]][the_whole_game[-1][-1]] in address_b:
+        knight_offsets = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+        for row_offset, col_offset in knight_offsets:
+            if 0 <= drop_row + row_offset < 8 and 0 <= drop_col + col_offset < 8:
+                piece = board[drop_row + row_offset][drop_col + col_offset]
+                if piece.endswith("knight") and piece in address_w:
+                    return True
+
+    return False  # No threats
+
+
+def no_w_universal_check():
+    # check the white king for checks
+    if (diags_w(w_king_movements[-1][-2], w_king_movements[-1][-1]) and
+            ups_and_downs_w(w_king_movements[-1][-2], w_king_movements[-1][-1])):
+        return True
+    return False
+
+
+def no_danger_square_w(rows, cols):
+    # The square the white king wants to go to has no danger
+    if diags_w(rows, cols) and ups_and_downs_w(rows, cols):
+        return True
+    return False
+
+
+# black king reqs for no checks
+def diags_b(row, col):
+    # check black king flanks
+    for row_offset, col_offset in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+        # Start from the drop position
+        check_row, check_col = row + row_offset, col + col_offset
+        # Iterate over the diagonal until reaching the edge of the board
+        while 0 <= check_row < board_size and 0 <= check_col < board_size:
+            # If something is in front you are safe
+            if ((board[check_row][check_col] in address_b or board[check_row][check_col]
+                 in ['w_pawn', 'w_rook', 'w_knight', 'w_king', 'w_knight', 'w_rook'])):
+                break
+            # Check if there's an enemy bishop or queen on the diagonal
+            elif board[check_row][check_col] in ['w_bishop', 'w_queen']:
+                return False
+            # Move to the next square along the diagonal
+            check_row += row_offset
+            check_col += col_offset
+    return True
+
+
+def ups_and_downs_b(row, col):
+    # Check horizontal and vertical paths
+    for direction in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+        row_offset, col_offset = direction
+        # Start from the drop position
+        check_row, check_col = row + row_offset, col + col_offset
+        # Iterate over the path until reaching the edge of the board
+        while 0 <= check_row < board_size and 0 <= check_col < board_size:
+            # If something is in front you are safe
+            if (board[check_row][check_col] in address_b or board[check_row][check_col]
+                    in ['w_pawn', 'w_bishop', 'w_knight', 'w_king', 'w_knight', 'w_bishop']):
+                break
+            # Check if there's an enemy rook or queen on the path
+            elif board[check_row][check_col] in ['wk_rook', 'wq_rook', 'w_queen']:
+                return False
+            # Move to the next square along the path
+            check_row += row_offset
+            check_col += col_offset
+    return True
+
+
+def no_b_universal_check():
+    # check the black king for checks
+    if (diags_b(b_king_movements[-1][-2], b_king_movements[-1][-1])
+            and ups_and_downs_b(b_king_movements[-1][-2], b_king_movements[-1][-1])):
+        return True
+    return False
+
+
+def no_danger_square_b(rows, cols):
+    # The square the black king wants to go to has no danger
+    if diags_b(rows, cols) and ups_and_downs_b(rows, cols):
+        return True
+    return False
+
+
+def checkmate_w():
+    if (not no_w_universal_check() and not hows_my_white_king(squares_around_the_w_king)
+            and not no_danger_square_b(the_whole_game[-1][-2], the_whole_game[-1][-1]) and
+            any_other_threat_w(the_whole_game[-1][-2], the_whole_game[-1][-1])):
+        return True  # The bad one
+    return False
+
+
+def checkmate_b():
+    if ((not no_b_universal_check() and not hows_my_black_king(squares_around_the_b_king)
+            and not no_danger_square_w(the_whole_game[-1][-2], the_whole_game[-1][-1])) and
+            any_other_threat_b(the_whole_game[-1][-2], the_whole_game[-1][-1])):
+        return True  # The bad one
+    return False
+
+
+# what's going on in human terms
+def scoreboard(piece):
+    global turns
+    global piece_has_moved
+    # So Mother can keep track of us all...
+    the_whole_game.append((piece, drop_row, drop_col))
+
+    # So you can keep track
+    if board[original_row][original_col] == piece:
+        pass
+    elif not (piece == 'w_pawn' or piece == 'b_pawn'):
+        piece = piece.split("_")
+        print(f'{turns} ---> {piece[-1]} {cols_to_letters[drop_col]}{rows_to_nums[drop_row]}')
+        translation.append([piece[-1], cols_to_letters[drop_col], rows_to_nums[drop_row]])
+        turns += 1
+        piece_has_moved = True
+    else:
+        print(f'{turns} ---> {cols_to_letters[drop_col]}{rows_to_nums[drop_row]}')
+        translation.append([cols_to_letters[drop_col], rows_to_nums[drop_row]])
+        turns += 1
+        piece_has_moved = True
+
+
+def the_pawn():
+    # Track initial position of pawns
+    initial_pawn_positions = {
+        'w_pawn': set(range(6)),  # Initial rows for white pawns
+        'b_pawn': set(range(2, 9))  # Initial rows for black pawns
+    }
+
+    # Determine if the pawn has moved from its initial position
+    def has_pawn_moved(piece, row):
+        return not (piece not in initial_pawn_positions or row not in initial_pawn_positions[piece])
+
+    def one_square():
+        # If the pawn has moved, it can only move one square
+        if has_pawn_moved(dragged_piece, original_row):
+            return (((dragged_piece == 'w_pawn' and original_row - drop_row == 1)
+                     or (dragged_piece == 'b_pawn' and original_row - drop_row == -1)) and original_col - drop_col == 0)
+        # Otherwise, it can move one or two squares
+        else:
+            return (dragged_piece == 'w_pawn' and original_row - drop_row in [1, 2] and original_col - drop_col == 0) or \
+                (dragged_piece == 'b_pawn' and original_row - drop_row in [-1, -2] and original_col - drop_col == 0)
+
+    def two_squares():
+        if dragged_piece == 'w_pawn':
+            return original_row == 6 and original_row - drop_row == 2 and original_col - drop_col == 0
+        elif dragged_piece == 'b_pawn':
+            return original_row == 1 and original_row - drop_row == -2 and original_col - drop_col == 0
+        return False
+
+    def can_attack():
+        if dragged_piece == 'w_pawn':
+            return drop_row == original_row - 1 and (drop_col == original_col - 1 or drop_col == original_col + 1) and \
+                board[drop_row][drop_col] != '' and (board[drop_row][drop_col] in address_b)
+        elif dragged_piece == 'b_pawn':
+            return drop_row == original_row + 1 and (drop_col == original_col - 1 or drop_col == original_col + 1) and \
+                board[drop_row][drop_col] != '' and (board[drop_row][drop_col] in address_w)
+        return False
+
+    def en_passant():
+        # Check if the last move was a two-square pawn move
+        if len(move_history_pawns) >= 2:
+            last_move = move_history_pawns[-1][-3]
+            type_of_pawn = move_history_pawns[-1][-4]
+            col_of__move = move_history_pawns[-1][-2]
+            row_of__move = move_history_pawns[-1][-1]
+            # Check if the last move was a two-square pawn move and if the
+            # piece is right next to that piece of opposite color
+            if (dragged_piece == 'w_pawn' and last_move == 2 and
+                    (
+                            original_col + 1 == col_of__move or original_col - 1 == col_of__move) and type_of_pawn == 'b_pawn'):
+                # Check if the current move captures en passant
+                if drop_row == row_of__move - 1 and abs(drop_col - col_of__move) == 0:
+                    # Check if the moving piece is a pawn and the destination is empty
+                    if board[drop_row][drop_col] == '' and board[row_of__move][col_of__move].endswith('pawn'):
+                        # Capture the pawn
+                        board[row_of__move - 1][col_of__move] = ''
+                        return True
+            elif (dragged_piece == 'b_pawn' and last_move == 2 and
+                  (original_col + 1 == col_of__move or original_col - 1 == col_of__move) and type_of_pawn == 'w_pawn'):
+                # Check if the current move captures en passant
+                if drop_row == row_of__move + 1 and abs(drop_col - col_of__move) == 0:
+                    # Check if the moving piece is a pawn and the destination is empty
+                    if board[drop_row][drop_col] == '' and board[row_of__move][col_of__move].endswith('pawn'):
+                        # Capture the pawn
+                        board[row_of__move + 1][col_of__move] = ''
+                        return True
+        return False
+
+    # Check if the destination square is empty
+    if board[drop_row][drop_col] == '':
+        if one_square() or two_squares():
+            harassed_square = board[drop_row][drop_col]
+            board[drop_row][original_col] = dragged_piece
+            if not no_b_universal_check() and dragged_piece == 'b_pawn':
+                board[drop_row][drop_col] = harassed_square
+                board[original_row][original_col] = dragged_piece
+            elif not no_w_universal_check() and dragged_piece == 'w_pawn':
+                board[drop_row][drop_col] = harassed_square
+                board[original_row][original_col] = dragged_piece
+            else:
+                move_history_pawns.append([dragged_piece, abs(original_row - drop_row), drop_col, drop_row])
+        elif en_passant():
+            board[drop_row][drop_col] = dragged_piece
+            board[original_row][drop_col] = ''
+            if not no_b_universal_check() and dragged_piece == 'b_pawn':
+                board[drop_row][drop_col + 1] = 'w_pawn'
+                board[original_row][original_col] = dragged_piece
+            elif not no_w_universal_check() and dragged_piece == 'w_pawn':
+                board[drop_row][drop_col - 1] = 'b_pawn'
+                board[original_row][original_col] = dragged_piece
+            else:
+                move_history_pawns.append([dragged_piece, abs(original_row - drop_row), drop_col, drop_row])
+        else:
+            board[original_row][original_col] = dragged_piece
+    else:
+        if can_attack():
+            attacked_piece = board[drop_row][drop_col]
+            board[drop_row][drop_col] = dragged_piece
+            if not no_b_universal_check() and dragged_piece == 'b_pawn':
+                board[drop_row][drop_col] = attacked_piece
+                board[original_row][original_col] = dragged_piece
+            elif not no_w_universal_check() and dragged_piece == 'w_pawn':
+                board[drop_row][drop_col] = attacked_piece
+                board[original_row][original_col] = dragged_piece
+            else:
+                move_history_pawns.append([dragged_piece, abs(original_row - drop_row), drop_col, drop_row])
+        else:
+            board[original_row][original_col] = dragged_piece
+
+
+def the_knight():
+    def l_shape():
+        return ((abs(drop_row - original_row) == 2 and abs(drop_col - original_col) == 1) or
+                (abs(drop_row - original_row) == 1 and abs(drop_col - original_col) == 2))
+
+    def capture_knight():
+        if dragged_piece == "w_knight" and board[drop_row][drop_col] in address_b:
+            return True
+        elif dragged_piece == "b_knight" and board[drop_row][drop_col] in address_w:
+            return True
+        return False
+
+    if l_shape() and board[drop_row][drop_col] == '':
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_knight':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_knight':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+    elif l_shape() and capture_knight():
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_knight':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_knight':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+    else:
+        board[original_row][original_col] = dragged_piece
+
+
+def the_bishop():
+    def is_diagonal():
+        return abs(drop_row - original_row) == abs(drop_col - original_col)
+
+    def is_clear_path():
+        # Determine the direction of movement (up or down, left or right)
+        row_direction = 1 if drop_row > original_row else -1
+        col_direction = 1 if drop_col > original_col else -1
+
+        # Check all squares along the diagonal path (excluding start and end squares)
+        for i in range(1, abs(drop_row - original_row)):
+            # Calculate the coordinates of the square to check
+            check_row = original_row + i * row_direction
+            check_col = original_col + i * col_direction
+            # If any square along the diagonal path is occupied, the path is not clear
+            if board[check_row][check_col] != '':
+                return False
+        return True
+
+    def capture_bishop():
+        if dragged_piece == 'w_bishop' and board[drop_row][drop_col] in address_b:
+            return True
+        elif dragged_piece == 'b_bishop' and board[drop_row][drop_col] in address_w:
+            return True
+        else:
+            return False
+
+    if is_diagonal() and is_clear_path() and board[drop_row][drop_col] == '':
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_bishop':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_bishop':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+    elif is_diagonal() and is_clear_path() and capture_bishop():
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_bishop':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_bishop':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+    else:
+        board[original_row][original_col] = dragged_piece
+
+
+def the_rook():
+    def track_rook_moves():
+        if dragged_piece == 'bq_rook':
+            b_queen_rook_moves.append([drop_row, drop_col])
+        elif dragged_piece == 'bk_rook':
+            b_king_rook_moves.append([drop_row, drop_col])
+        elif dragged_piece == 'wk_rook':
+            w_king_rook_moves.append([drop_row, drop_col])
+        elif dragged_piece == 'wq_rook':
+            w_queen_rook_moves.append([drop_row, drop_col])
+
+    def is_vertical_or_horizontal():
+        return (drop_row == original_row) or (drop_col == original_col)
+
+    def is_clear_path():
+        # Determine the direction of movement (up, down, left, or right)
+        if drop_row == original_row:
+            row_direction = 0
+            col_direction = 1 if drop_col > original_col else -1
+        else:
+            row_direction = 1 if drop_row > original_row else -1
+            col_direction = 0
+
+        # Check all squares along the path (excluding start and end squares)
+        for i in range(1, max(abs(drop_row - original_row), abs(drop_col - original_col))):
+            # Calculate the coordinates of the square to check
+            check_row = original_row + i * row_direction
+            check_col = original_col + i * col_direction
+            # If any square along the path is occupied, the path is not clear
+            if board[check_row][check_col] != '':
+                return False
+        return True
+
+    def capture_rook():
+        if (dragged_piece == 'wq_rook' or dragged_piece == 'wk_rook') and board[drop_row][drop_col] in address_b:
+            return True
+        elif (dragged_piece == 'bq_rook' or dragged_piece == 'bk_rook') and board[drop_row][drop_col] in address_w:
+            return True
+        else:
+            return False
+
+    if is_vertical_or_horizontal() and is_clear_path() and board[drop_row][drop_col] == '':
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_rook':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_rook':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        else:
+            track_rook_moves()
+    elif is_vertical_or_horizontal() and capture_rook():
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_rook':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_rook':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        else:
+            track_rook_moves()
+    else:
+        board[original_row][original_col] = dragged_piece
+
+
+def the_queen():
+    def is_vertical_or_horizontal():
+        return (drop_row == original_row) or (drop_col == original_col)
+
+    def is_diagonal():
+        return abs(drop_row - original_row) == abs(drop_col - original_col)
+
+    def is_clear_path():
+        # Determine the direction of movement
+        row_direction = 1 if drop_row > original_row else -1 if drop_row < original_row else 0
+        col_direction = 1 if drop_col > original_col else -1 if drop_col < original_col else 0
+
+        # Check all squares along the path (excluding start and end squares)
+        for i in range(1, max(abs(drop_row - original_row), abs(drop_col - original_col))):
+            check_row = original_row + i * row_direction
+            check_col = original_col + i * col_direction
+            if board[check_row][check_col] != '':
+                return False
+        return True
+
+    def capture_queen():
+        if dragged_piece == 'w_queen' and board[drop_row][drop_col] in address_b:
+            return True
+        elif dragged_piece == 'b_queen' and board[drop_row][drop_col] in address_w:
+            return True
+        else:
+            return False
+
+    if (is_vertical_or_horizontal() or is_diagonal()) and is_clear_path() and board[drop_row][drop_col] == '':
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_queen':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_queen':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+    elif (is_vertical_or_horizontal() or is_diagonal()) and capture_queen():
+        harassed_square = board[drop_row][drop_col]
+        board[drop_row][drop_col] = dragged_piece
+        if not no_b_universal_check() and dragged_piece == 'b_queen':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+        elif not no_w_universal_check() and dragged_piece == 'w_queen':
+            board[drop_row][drop_col] = harassed_square
+            board[original_row][original_col] = dragged_piece
+    else:
+        board[original_row][original_col] = dragged_piece
+
+
+def the_king():
+    def is_valid_move():
+        # Check if the move is within one square in any direction
+        valid_distance = abs(drop_row - original_row) <= 1 and abs(drop_col - original_col) <= 1
+        # Check if the move does not put the king in check
+        return valid_distance
+
+    def has_king_not_moved():
+        if len(w_king_movements) > 1 and dragged_piece == 'w_king':
+            return False  # White king has moved
+        elif len(b_king_movements) > 1 and dragged_piece == 'b_king':
+            return False  # Black king has moved
+        return True  # The king(w/b depending on the test) has not moved
+
+    def diagonal_is_clear():
+        # Check diagonals in four directions: top-left, top-right, bottom-left, and bottom-right
+        if dragged_piece == 'w_king':
+            for row_offset, col_offset in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                # Start from the drop position
+                check_row, check_col = drop_row + row_offset, drop_col + col_offset
+                # Iterate over the diagonal until reaching the edge of the board
+                while 0 <= check_row < board_size and 0 <= check_col < board_size:
+                    # If something is in front you are safe
+                    if ((board[check_row][check_col] in address_w or board[check_row][check_col]
+                         in ['b_pawn', 'b_rook', 'b_knight', 'b_king', 'b_knight', 'b_rook'])):
+                        break
+                    # Check if there's an enemy bishop or queen on the diagonal
+                    elif board[check_row][check_col] in ['b_bishop', 'b_queen']:
+                        return False
+                    # Move to the next square along the diagonal
+                    check_row += row_offset
+                    check_col += col_offset
+
+        elif dragged_piece == 'b_king':
+            for row_offset, col_offset in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                # Start from the drop position
+                check_row, check_col = drop_row + row_offset, drop_col + col_offset
+                # Iterate over the diagonal until reaching the edge of the board
+                while 0 <= check_row < board_size and 0 <= check_col < board_size:
+                    # If something is in front you are safe
+                    if ((board[check_row][check_col] in address_b or board[check_row][check_col]
+                         in ['w_pawn', 'w_rook', 'w_knight', 'w_king', 'w_knight', 'w_rook'])):
+                        break
+                    # Check if there's an enemy bishop or queen on the diagonal
+                    elif board[check_row][check_col] in ['w_bishop', 'w_queen']:
+                        return False
+                    # Move to the next square along the diagonal
+                    check_row += row_offset
+                    check_col += col_offset
+
+        # No threat found on any diagonal, so it's clear
+        return True
+
+    def horizontal_and_vertical_is_clear():
+        # Check horizontal and vertical paths
+        if dragged_piece == 'w_king':
+            for direction in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                row_offset, col_offset = direction
+                # Start from the drop position
+                check_row, check_col = drop_row + row_offset, drop_col + col_offset
+                # Iterate over the path until reaching the edge of the board
+                while 0 <= check_row < board_size and 0 <= check_col < board_size:
+                    # If something is in front you are safe
+                    if (board[check_row][check_col] in address_w or board[check_row][check_col]
+                            in ['b_pawn', 'b_bishop', 'b_knight', 'b_king', 'b_knight', 'b_bishop']):
+                        break
+                    # Check if there's an enemy rook or queen on the path
+                    elif board[check_row][check_col] in ['bq_rook', 'bk_rook', 'b_queen']:
+                        return False
+                    # Move to the next square along the path
+                    check_row += row_offset
+                    check_col += col_offset
+
+        elif dragged_piece == 'b_king':
+            for direction in [(0, 1), (0, -1), (1, 0), (-1, 0)]:
+                row_offset, col_offset = direction
+                # Start from the drop position
+                check_row, check_col = drop_row + row_offset, drop_col + col_offset
+                # Iterate over the path until reaching the edge of the board
+                while 0 <= check_row < board_size and 0 <= check_col < board_size:
+                    # If something is in front you are safe
+                    if (board[check_row][check_col] in address_b or board[check_row][check_col]
+                            in ['w_pawn', 'w_bishop', 'w_knight', 'w_king', 'w_knight', 'w_bishop']):
+                        break
+                    # Check if there's an enemy rook or queen on the path
+                    elif board[check_row][check_col] in ['wk_rook', 'wq_rook', 'w_queen']:
+                        return False
+                    # Move to the next square along the path
+                    check_row += row_offset
+                    check_col += col_offset
+
+        # No threat found on any horizontal or vertical path, so it's clear
+        return True
+
+    def is_king_not_in_check():
+
+        # ----------------------------------------------White King----------------------------------------------------#
+        # Check if the king is near the top-left corner and there's an enemy pawn to the top-left
+        if dragged_piece == 'w_king' and drop_row > 0 and drop_col > 0 and board[drop_row - 1][drop_col - 1].endswith(
+                "pawn") and board[drop_row - 1][drop_col - 1] in address_b:
+            return False  # King in check
+
+        # Check if the king is near the top-right corner and there's an enemy pawn to the top-right
+        if dragged_piece == 'w_king' and drop_row > 0 and drop_col < 7 and board[drop_row - 1][drop_col + 1].endswith(
+                "pawn") and board[drop_row - 1][drop_col + 1] in address_b:
+            return False  # King in check
+
+        # Check if there's an enemy pawn in front of the king
+        if dragged_piece == 'w_king' and drop_row > 0:
+            if (drop_col > 0 and board[drop_row - 1][drop_col - 1].endswith("pawn") and
+                    board[drop_row - 1][drop_col - 1] in address_b):
+                return False  # King in check
+            if (drop_col < 7 and board[drop_row - 1][drop_col + 1].endswith("pawn") and
+                    board[drop_row - 1][drop_col + 1] in address_b):
+                return False  # King in check
+
+            # Check if the king is right next to the enemy king
+        if dragged_piece == 'w_king':
+            for row_offset in [-1, 0, 1]:
+                for col_offset in [-1, 0, 1]:
+                    if 0 <= drop_row + row_offset < 8 and 0 <= drop_col + col_offset < 8:
+                        piece = board[drop_row + row_offset][drop_col + col_offset]
+                        if piece.endswith("king") and piece in address_b:
+                            return False  # King in check
+
+            # Check if there's an enemy knight in sight of the king
+        if dragged_piece == 'w_king':
+            knight_offsets = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+            for row_offset, col_offset in knight_offsets:
+                if 0 <= drop_row + row_offset < 8 and 0 <= drop_col + col_offset < 8:
+                    piece = board[drop_row + row_offset][drop_col + col_offset]
+                    if piece.endswith("knight") and piece in address_b:
+                        return False  # King in check
+
+        # ----------------------------------------------Black King-----------------------------------------------------#
+        # Check if the king is near the bottom-left corner and there's an enemy pawn to the bottom-left
+        if dragged_piece == 'b_king' and drop_row < 7 and drop_col > 0 and board[drop_row + 1][drop_col - 1].endswith(
+                "pawn") and board[drop_row + 1][drop_col - 1] in address_w:
+            return False  # King in check
+
+            # Check if the king is near the bottom-right corner and there's an enemy pawn to the bottom-right
+        if dragged_piece == 'b_king' and drop_row < 7 and drop_col < 7 and board[drop_row + 1][drop_col + 1].endswith(
+                "pawn") and board[drop_row + 1][drop_col + 1] in address_w:
+            return False  # King in check
+
+            # Check if there's an enemy pawn in front of the king
+        if dragged_piece == 'b_king' and drop_row < 7:
+            if (drop_col > 0 and board[drop_row + 1][drop_col - 1].endswith("pawn") and
+                    board[drop_row + 1][drop_col - 1] in address_w):
+                return False  # King in check
+            if (drop_col < 7 and board[drop_row + 1][drop_col + 1].endswith("pawn") and
+                    board[drop_row + 1][drop_col + 1] in address_w):
+                return False  # King in check
+
+            # Check if the king is right next to the enemy king
+        if dragged_piece == 'b_king':
+            for row_offset in [-1, 0, 1]:
+                for col_offset in [-1, 0, 1]:
+                    if 0 <= drop_row + row_offset < 8 and 0 <= drop_col + col_offset < 8:
+                        piece = board[drop_row + row_offset][drop_col + col_offset]
+                        if piece.endswith("king") and piece in address_w:
+                            return False  # King in check
+
+            # Check if there's an enemy knight in sight of the king
+        if dragged_piece == 'b_king':
+            knight_offsets = [(-2, -1), (-2, 1), (-1, -2), (-1, 2), (1, -2), (1, 2), (2, -1), (2, 1)]
+            for row_offset, col_offset in knight_offsets:
+                if 0 <= drop_row + row_offset < 8 and 0 <= drop_col + col_offset < 8:
+                    piece = board[drop_row + row_offset][drop_col + col_offset]
+                    if piece.endswith("knight") and piece in address_w:
+                        return False  # King in check
+
+        # If no threat is detected, king is not in check
+        return True
+
+    def track_king_moves():
+        if dragged_piece == 'w_king':
+            w_king_movements.append((dragged_piece, drop_row, drop_col))
+        else:
+            b_king_movements.append((dragged_piece, drop_row, drop_col))
+
+    def kingside_castle():
+        # Check if the king and rook haven't moved
+        if (len(w_king_movements) > 1 or len(w_king_rook_moves) > 0) and dragged_piece == 'w_king':
+            return False
+        elif board[7][5] == board[7][6] == '' and dragged_piece == 'w_king':
+            return True
+
+        if (len(b_king_movements) > 1 or len(b_king_rook_moves) > 0) and dragged_piece == 'b_king':
+            return False
+        elif board[0][5] == board[0][6] == '' and dragged_piece == 'b_king':
+            return True
+        return False
+
+    def queenside_castle():
+        # Check if the king and rook haven't moved
+        if (len(w_king_movements) > 1 or len(w_queen_rook_moves) > 0) and dragged_piece == 'w_king':
+            return False
+        elif board[7][3] == board[7][2] == board[7][1] == '' and dragged_piece == 'w_king':
+            return True
+
+        if (len(b_king_movements) > 1 or len(b_king_rook_moves) > 0) and dragged_piece == 'b_king':
+            return False
+        elif board[0][3] == board[0][2] == board[0][1] == '' and dragged_piece == 'b_king':
+            return True
+        return False
+
+    def capture_king():
+        if dragged_piece == 'w_king' and board[drop_row][drop_col] in address_b:
+            return True
+        elif dragged_piece == 'b_king' and board[drop_row][drop_col] in address_w:
+            return True
+        else:
+            return False
+
+    if (is_valid_move() and board[drop_row][drop_col] == '' and is_king_not_in_check() and
+            diagonal_is_clear() and horizontal_and_vertical_is_clear()):
+        board[drop_row][drop_col] = dragged_piece
+        track_king_moves()
+    elif (is_valid_move() and capture_king() and is_king_not_in_check() and
+          diagonal_is_clear() and horizontal_and_vertical_is_clear()):
+        board[drop_row][drop_col] = dragged_piece
+        track_king_moves()
+    elif (board[drop_row][drop_col] == '' and is_king_not_in_check() and diagonal_is_clear() and
+          horizontal_and_vertical_is_clear() and kingside_castle() and
+          original_row == drop_row and original_col + 2 == drop_col):
+        # if w/b king wants to castle king side
+        if dragged_piece == 'w_king' and not (no_danger_square_w(7, 5)):
+            board[original_row][original_col] = dragged_piece
+        elif dragged_piece == 'b_king' and not (no_danger_square_b(0, 5)):
+            board[original_row][original_col] = dragged_piece
+        else:
+            board[drop_row][drop_col] = dragged_piece
+
+            if dragged_piece in address_w:
+                board[drop_row][drop_col - 1] = 'wk_rook'
+                board[7][7] = ''
+                board[7][4] = ''
+
+            else:
+                board[drop_row][drop_col - 1] = 'bk_rook'
+                board[0][7] = ''
+                board[0][4] = ''
+            track_king_moves()
+            print("\n  ---> Castles King-side!")
+    elif (board[drop_row][drop_col] == '' and is_king_not_in_check() and diagonal_is_clear() and
+          horizontal_and_vertical_is_clear() and queenside_castle() and
+          original_row == drop_row and original_col - 2 == drop_col):
+        if dragged_piece == 'w_king' and not (no_danger_square_w(7, 3)):
+            board[original_row][original_col] = dragged_piece
+        elif dragged_piece == 'b_king' and not (no_danger_square_b(0, 3)):
+            board[original_row][original_col] = dragged_piece
+        else:
+            # if w/b king wants to castle queen side
+            board[drop_row][drop_col] = dragged_piece
+
+            if dragged_piece in address_w:
+                board[drop_row][drop_col + 1] = 'wq_rook'
+                board[7][0] = ''
+                board[7][4] = ''
+            else:
+                board[drop_row][drop_col + 1] = 'bq_rook'
+                board[0][0] = ''
+                board[0][4] = ''
+            track_king_moves()
+            print("\n  ---> Castles Queen-side!")
+    else:
+        board[original_row][original_col] = dragged_piece
+
+
+# chessboard placement
+board = [['' for _ in range(board_size)] for _ in range(board_size)]
+for i in range(8):
+    board[0][i] = address_b[i + 1]
+    board[1][i] = address_b[0]
+    board[7][i] = address_w[i + 1]
+    board[6][i] = address_w[0]
+
+
+def draw_board():
+    for row in range(board_size):
+        for col in range(board_size):
+            color = WHITE if (row + col) % 2 == 0 else GRAY
+            pygame.draw.rect(screen, color, (col * my_size, row * my_size, my_size, my_size))
+            piece = board[row][col]
+            if piece:
+                screen.blit(chess_pieces[piece], (col * my_size, row * my_size))
+
+
+# Time to play some chess...
+while running:
+    screen.fill(BLACK)
+    draw_board()
+
+    # Handle events
+    for event in pygame.event.get():
+        if event.type == pygame.QUIT or checkmate_w() or checkmate_b():
+            running = False
+            if checkmate_w():
+                winner = pygame.image.load('black_wins.png')
+                start_time = pygame.time.get_ticks()
+                while True:
+                    current_time = pygame.time.get_ticks()
+                    screen.blit(winner, (200, 350))
+                    pygame.display.update()
+                    if current_time - start_time >= 5000:
+                        break
+            elif checkmate_b():
+                winner = pygame.image.load('white_wins.png')
+                start_time = pygame.time.get_ticks()
+                while True:
+                    current_time = pygame.time.get_ticks()
+                    screen.blit(winner, (200, 350))
+                    pygame.display.update()
+                    if current_time - start_time >= 5000:
+                        break
+
+        elif event.type == pygame.MOUSEBUTTONUP:
+            if event.button == 1 and dragging:
+                mouse_x, mouse_y = event.pos
+                drop_col = mouse_x // my_size
+                drop_row = mouse_y // my_size
+                if 0 <= drop_col < my_size and 0 <= drop_row < my_size:
+
+                    if dragged_piece == 'w_pawn' or dragged_piece == 'b_pawn':
+                        if turns % 2 == 1 and dragged_piece in address_w:
+                            try:
+                                the_pawn()
+                            except not no_w_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        elif turns % 2 == 0 and dragged_piece in address_b:
+                            try:
+                                the_pawn()
+                            except not no_b_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        else:
+                            board[original_row][original_col] = dragged_piece
+
+                    elif dragged_piece == 'w_knight' or dragged_piece == 'b_knight':
+                        if turns % 2 == 1 and dragged_piece in address_w:
+                            try:
+                                the_knight()
+                            except not no_w_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        elif turns % 2 == 0 and dragged_piece in address_b:
+                            try:
+                                the_knight()
+                            except not no_w_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        else:
+                            board[original_row][original_col] = dragged_piece
+
+                    elif dragged_piece == 'w_bishop' or dragged_piece == 'b_bishop':
+                        if turns % 2 == 1 and dragged_piece in address_w:
+                            try:
+                                the_bishop()
+                            except not no_w_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        elif turns % 2 == 0 and dragged_piece in address_b:
+                            try:
+                                the_bishop()
+                            except not no_b_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        else:
+                            board[original_row][original_col] = dragged_piece
+
+                    elif (dragged_piece == 'wq_rook' or dragged_piece == 'bq_rook' or
+                          dragged_piece == 'wk_rook' or dragged_piece == 'bk_rook'):
+                        if turns % 2 == 1 and dragged_piece in address_w:
+                            try:
+                                the_rook()
+                            except not no_w_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        elif turns % 2 == 0 and dragged_piece in address_b:
+                            try:
+                                the_rook()
+                            except not no_b_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        else:
+                            board[original_row][original_col] = dragged_piece
+
+                    elif dragged_piece == 'w_queen' or dragged_piece == 'b_queen':
+                        if turns % 2 == 1 and dragged_piece in address_w:
+                            try:
+                                the_queen()
+                            except not no_w_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        elif turns % 2 == 0 and dragged_piece in address_b:
+                            try:
+                                the_queen()
+                            except not no_b_universal_check():
+                                board[original_row][original_col] = dragged_piece
+                        else:
+                            board[original_row][original_col] = dragged_piece
+
+                    elif dragged_piece == 'w_king' or dragged_piece == 'b_king':
+                        if turns % 2 == 1 and dragged_piece in address_w:
+                            the_king()
+                        elif turns % 2 == 0 and dragged_piece in address_b:
+                            the_king()
+                        else:
+                            board[original_row][original_col] = dragged_piece
+                    else:
+                        board[drop_row][drop_col] = dragged_piece
+                dragging = False
+
+                # broadcasts to screen the moves
+                scoreboard(dragged_piece)
+
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1:  # Left mouse button
+                mouse_x, mouse_y = event.pos
+                for row in range(board_size):
+                    for col in range(board_size):
+                        if board[row][col] and pygame.Rect(col * my_size, row * my_size, my_size, my_size).collidepoint(
+                                mouse_x, mouse_y):
+                            original_row = row
+                            original_col = col
+                            dragged_piece = board[row][col]
+                            drag_offset_x = col * my_size - mouse_x
+                            drag_offset_y = row * my_size - mouse_y
+                            dragging = True
+                            board[row][col] = ''
+
+        #  The World - OOOOOOOOOHHHHHHHHHH!!!!
+
+    # Update dragged piece position
+    mouse_x, mouse_y = pygame.mouse.get_pos()
+
+    if dragging and (mouse_x < 0 or mouse_x >= 800 or mouse_y < 0 or mouse_y >= 800):
+        # Reset the dragged piece to its original position
+        board[original_row][original_col] = dragged_piece
+        dragging = False
+
+    if dragging:
+        mouse_x = max(0, min(mouse_x, w))
+        mouse_y = max(0, min(mouse_y, h))
+        screen.blit(chess_pieces[dragged_piece], (mouse_x + drag_offset_x, mouse_y + drag_offset_y))
+
+    pygame.display.update()
+# --------------------------------------------------------------------------------------------------------------- #
+
+pygame.quit()
+sys.exit()
+
+# inspection station
+#
+#
+#
